@@ -1,8 +1,8 @@
 ---
 name: SWF-NeedsRecompile
-version: 1.00
+version: 1.01
 author:
-  - 'Clotho Advanced Media Inc., I<cpan@clotho.com>'
+  - 'Clotho Advanced Media, Inc. <cpan@clotho.com>'
 abstract: Tests if any SWF or FLA file dependencies have changed
 license: perl
 build_requires:
@@ -10,5 +10,5 @@ build_requires:
 provides:
   SWF::NeedsRecompile:
     file: lib/SWF/NeedsRecompile.pm
-    version: 1.00
+    version: 1.01
 generated_by: Module::Build version 0.2611

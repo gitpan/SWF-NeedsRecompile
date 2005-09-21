@@ -1,3 +1,15 @@
+2005-09-21 17:22  chris
+
+	* MANIFEST.SKIP, example/broken.fla, example/example.fla,
+	  example/simple.fla, lib/SWF/NeedsRecompile.pm, t/swf.t: v1.01
+	  Refactor the code to split apart the huge check function Add a
+	  bunch more tests, fix some bugs in corner cases
+
+2005-09-20 14:48  chris
+
+	* Build.PL, MANIFEST, MANIFEST.SKIP, t/1.t, t/pod-coverage.t,
+	  t/pod.t, t/swf.t: Standardize tests
+
 2005-08-10 09:19  chris
 
 	* MANIFEST, MANIFEST.SKIP: Add examples to MANIFEST

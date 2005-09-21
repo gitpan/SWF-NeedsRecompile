@@ -7,7 +7,7 @@ use File::Basename;
 use Carp;
 use Exporter;
 
-our $VERSION = "1.00";
+our $VERSION = "1.01";
 our @ISA = qw(Exporter);
 our @EXPORT;
 our @EXPORT_OK = qw(check_files as_classpath flash_prefs_path flash_config_path);
@@ -93,6 +93,13 @@ C<import com.example.Foo;>
 
 =over
 
+=cut
+
+sub _log
+{
+   print @_ if ($verbose);
+}
+
 =item check_files FILE, FILE, ...
 
 Examine a list of .swf and/or .fla files and return the filenames of
@@ -110,9 +117,6 @@ sub check_files
 
    my @needsRecompile;
 
-   # Slurp all files whole
-   local $/;
-   
    # The depends hash is a cache of the #include and import lines in each file
    my %depends = ();
 
@@ -121,7 +125,7 @@ sub check_files
       (my $base = $file) =~ s/\.(?:swf|fla)$//;
       if ($base eq $file)
       {
-         print "$file is not a .swf or a .fla file\n" if ($verbose);
+         _log("$file is not a .swf or a .fla file\n");
          next;
       }
       my $swf = "$base.swf";
@@ -130,39 +134,12 @@ sub check_files
       # Do the simple case first
       if (! -e $swf)
       {
-         push @needsRecompile, $swf;
+         push @needsRecompile, $file;
          next;
       }
 
       # Look for FLA-specific Classpaths
-      local *FLA;
-      my @paths = (".");
-      if (open(FLA, $fla))
-      {
-         my $content = <FLA>;
-         close FLA;
-         # Limitation: the path must be purely ASCII or this doesn't work
-         @paths = $content =~ /V\0e\0c\0t\0o\0r\0:\0:\0P\0a\0c\0k\0a\0g\0e\0 \0P\0a\0t\0h\0s\0....((?:[^\0]\0)*)/g;
-         if (@paths > 0)
-         {
-            my $path = $paths[-1];
-            $path =~ s/\0//g;
-            @paths = split /;/, $path;
-            require File::Spec;
-            for (@paths)
-            {
-               if (!File::Spec->file_name_is_absolute($_))
-               {
-                  my $dir = [File::Spec->splitpath($fla)]->[1];
-                  if ($dir)
-                  {
-                     $_ = File::Spec->rel2abs($_, $dir);
-                  }
-               }
-            }
-         }
-         print "FLA Paths: @paths\n" if ($verbose);
-      }
+      my @paths = _get_fla_classpaths($fla);
 
       # Check all SWF dependencies, recursively
       my @check = ($fla);
@@ -175,137 +152,53 @@ sub check_files
 
          if (! -f $checkfile)
          {
-            croak "Failed to locate file needed to compile $swf:\n  $checkfile\n";
+            _log("Failed to locate file needed to compile $swf:  $checkfile\n");
+            $up_to_date = 0;
+            last;
          }
 
-         print "check $checkfile\n" if ($verbose);
+         _log("check $checkfile\n");
          $up_to_date = _up_to_date($checkfile, $swf);
          $checked{$checkfile} = 1;
          if (!$up_to_date)
          {
-            print "Failed up to date check for $checkfile vs. $swf\n" if ($verbose);
+            _log("Failed up to date check for $checkfile vs. $swf\n");
             last;
          }
 
          if (! -r $checkfile)
          {
-            print "Unreadable file $checkfile\n" if ($verbose);
+            _log("Unreadable file $checkfile\n");
             last;
          }
 
          if (!$depends{$checkfile})
          {
-            print "do deps for $checkfile\n" if ($verbose);
+            _log("do deps for $checkfile\n");
             $depends{$checkfile} = [];
             local *FILE;
+            local $/; # Slurp files whole
             open(FILE, $checkfile) || croak "This shouldn't happen since the file is supposed to be readable";
             my $content = <FILE>;
             close FILE;
 
-            # Check both ascii and ascii-unicode, supporting Flash MX and 2004 .fla files
-            # This will fail for non-ascii filenames
-            my @deps = $content =~ /\#\0?i\0?n\0?c\0?l\0?u\0?d\0?e\0?(?:\s\0?)+\"\0?([^\"\r\n]+?)\"/gs;
-            foreach (@deps)
+            my %imported_files;
+            my %seen;
+            
+            # check for include and import statements and instantiations via "new"
+            my @deps = (
+               _get_includes($checkfile, \$content, \%seen),
+               _get_imports($checkfile, \$content, \@paths, \%imported_files, \%seen),
+               _get_instantiations($checkfile, \$content, \@paths, \%imported_files, \%seen),
+            );
+            my @problems = map {@$_} grep {ref $_} @deps;
+            if (@problems > 0)
             {
-               # This is a hack.  Strip real Unicode down to ASCII
-               s/\0//g;
-               if ($_)
-               {
-                  my $file;
-                  if (! -f $_)
-                  {
-                     if (File::Spec->file_name_is_absolute($_))
-                     {
-                        $file = $_;
-                     }
-                     else
-                     {
-                        my $dir = [File::Spec->splitpath($checkfile)]->[1];
-                        if ($dir)
-                        {
-                           $file = File::Spec->rel2abs($_, $dir);
-                        }
-                        else
-                        {
-                           $file = $_;
-                        }
-                     }
-                  }
-                  push @{$depends{$checkfile}}, $file || $_;
-                  print "#include $_ from $checkfile\n" if ($verbose);
-               }
+               _log("Failed to locate dependencies in $checkfile: @problems\n");
+               $up_to_date = 0;
+               last;
             }
-
-            # check for import statements
-            @deps = $content =~ /i\0?m\0?p\0?o\0?r\0?t\0?(?:\s\0?)+((?:[^\;\0\s]\0?)+);/gs;
-            my %imped_files;
-            my %sn;
-            foreach my $imp (@deps)
-            {
-               next if ($sn{$imp}++); # speedup
-               # This is a hack.  Strip real Unicode down to ASCII
-               $imp =~ s/\0//g;
-               print "import $imp from $checkfile\n" if ($verbose);
-               foreach my $dir (@paths, as_classpath())
-               {
-                  my $f = File::Spec->catdir(File::Spec->splitdir($dir), split(/\./, $imp));
-                  if ($f =~ /\*$/)
-                  {
-                     my @d = File::Spec->splitdir($f);
-                     pop @d;
-                     $f = File::Spec->catdir(@d);
-                     local *DIR;
-                     if (opendir(DIR, $f))
-                     {
-                        my @as = grep /\.as$/, readdir(DIR);
-                        closedir DIR;
-
-                        $imped_files{$_} = 1 for @as;
-                        @as = map {File::Spec->catfile($f, $_)} @as;
-
-                        for (@as)
-                        {
-                           print "  import $_ from $checkfile\n" if ($verbose);
-                        }
-                        push @{$depends{$checkfile}}, @as;
-                     }
-                  }
-                  else
-                  {
-                     $f .= ".as";
-                     if (-f $f)
-                     {
-                        my @p = split /\./, $imp;
-                        $imped_files{$p[-1].".as"} = 1;
-                        print "  import $f from $checkfile\n" if ($verbose);
-                        push @{$depends{$checkfile}}, $f;
-                        last;
-                     }
-                  }
-               }
-            }
-
-            # Check for instantiations
-            @deps = $content =~ /n\0?e\0?w\0?(?:\s\0?)+((?:[^\(;\s\0]\0?)+)\(/gs;
-            foreach my $imp (@deps)
-            {
-               next if ($sn{$imp}++); # speedup
-               # This is a hack.  Strip real Unicode down to ASCII
-               $imp =~ s/\0//g;
-               print "instance $imp from $checkfile\n" if ($verbose);
-               next if ($imped_files{$imp.".as"});
-               foreach my $dir (@paths, as_classpath())
-               {
-                  my $f = File::Spec->catdir(File::Spec->splitdir($dir), split(/\./, $imp));
-                  $f .= ".as";
-                  if (-f $f)
-                  {
-                     print "  instance $f from $checkfile\n" if ($verbose);
-                     push @{$depends{$checkfile}}, $f;
-                     last;
-                  }
-               }
-            }
+            $depends{$checkfile} = \@deps;
          }
          push @check, @{$depends{$checkfile}};
       }
@@ -316,6 +209,176 @@ sub check_files
       }
    }
    return @needsRecompile;
+}
+
+sub _get_fla_classpaths
+{
+   my $fla = shift;
+
+   local *FLA;
+   local $/; # Slurp files whole
+   my @paths;
+   if (open(FLA, $fla))
+   {
+      my $content = <FLA>;
+      close FLA;
+      # Limitation: the path must be purely ASCII or this doesn't work
+      @paths = $content =~ /V\0e\0c\0t\0o\0r\0:\0:\0P\0a\0c\0k\0a\0g\0e\0 \0P\0a\0t\0h\0s\0....((?:[^\0]\0)*)/g;
+      if (@paths > 0)
+      {
+         my $path = $paths[-1];
+         $path =~ s/\0//g;
+         @paths = split /;/, $path;
+         require File::Spec;
+         for (@paths)
+         {
+            if (!File::Spec->file_name_is_absolute($_))
+            {
+               my $dir = [File::Spec->splitpath($fla)]->[1];
+               if ($dir)
+               {
+                  $_ = File::Spec->rel2abs($_, $dir);
+               }
+            }
+         }
+      }
+      _log("FLA Paths: @paths\n");
+   }
+   return @paths;
+}
+
+sub _get_includes
+{
+   my $checkfile = shift;
+   my $content_ref = shift;
+   my $seen_ref = shift;
+
+   my @deps;
+
+   # Check both ascii and ascii-unicode, supporting Flash MX and 2004 .fla files
+   # This will fail for non-ascii filenames
+   my @matches = $$content_ref =~ /\#\0?i\0?n\0?c\0?l\0?u\0?d\0?e\0?(?:\s\0?)+\"\0?([^\"\r\n]+?)\"/gs;
+   foreach my $inc (@matches)
+   {
+      next if ($seen_ref->{$inc}++); # speedup
+      # This is a hack.  Strip real Unicode down to ASCII
+      $inc =~ s/\0//g;
+      if ($inc)
+      {
+         my $file = $inc;
+         if (! -f $file)
+         {
+            if (! File::Spec->file_name_is_absolute($file))
+            {
+               my $dir = [File::Spec->splitpath($checkfile)]->[1];
+               if ($dir)
+               {
+                  $file = File::Spec->rel2abs($file, $dir);
+               }
+            }
+            return [$inc] if (! -f $file);
+         }
+         push @deps, $file;
+         _log("#include $inc from $checkfile\n");
+      }
+   }
+   return @deps;
+}
+
+sub _get_imports
+{
+   my $checkfile = shift;
+   my $content_ref = shift;
+   my $fla_path_ref = shift;
+   my $imported_file_ref = shift;
+   my $seen_ref = shift;
+
+   my @deps;
+   my @matches = $$content_ref =~ /i\0?m\0?p\0?o\0?r\0?t\0?(?:\s\0?)+((?:[^\;\0\s]\0?)+);/gs;
+   foreach my $imp (@matches)
+   {
+      next if ($seen_ref->{$imp}++); # speedup
+      # This is a hack.  Strip real Unicode down to ASCII
+      $imp =~ s/\0//g;
+      _log("import $imp from $checkfile\n");
+      my $found = 0;
+      foreach my $dir (@$fla_path_ref, as_classpath())
+      {
+         my $f = File::Spec->catdir(File::Spec->splitdir($dir), split(/\./, $imp));
+         if ($f =~ /\*$/)
+         {
+            my @d = File::Spec->splitdir($f);
+            pop @d;
+            $f = File::Spec->catdir(@d);
+            local *DIR;
+            if (opendir(DIR, $f))
+            {
+               my @as = grep /\.as$/, readdir(DIR);
+               closedir DIR;
+               
+               $imported_file_ref->{$_} = 1 for @as;
+               @as = map {File::Spec->catfile($f, $_)} @as;
+               
+               for (@as)
+               {
+                  _log("  import $_ from $checkfile\n");
+               }
+               push @deps, @as;
+            }
+            $found = 1;
+         }
+         else
+         {
+            $f .= ".as";
+            if (-f $f)
+            {
+               my @p = split /\./, $imp;
+               $imported_file_ref->{$p[-1].".as"} = 1;
+               _log("  import $f from $checkfile\n");
+               push @deps, $f;
+               $found = 1;
+               last;
+            }
+         }
+      }
+      return [$imp] if (!$found);
+   }
+   return @deps;
+}
+
+sub _get_instantiations
+{
+   my $checkfile = shift;
+   my $content_ref = shift;
+   my $fla_path_ref = shift;
+   my $imported_file_ref = shift;
+   my $seen_ref = shift;
+
+   my @deps;
+   my @matches = $$content_ref =~ /n\0?e\0?w\0?(?:\s\0?)+((?:[^\(;\s\0]\0?)+)\(/gs;
+   foreach my $imp (@matches)
+   {
+      next if ($seen_ref->{$imp}++); # speedup
+      # This is a hack.  Strip real Unicode down to ASCII
+      $imp =~ s/\0//g;
+      _log("instance $imp from $checkfile\n");
+      next if ($imported_file_ref->{$imp.".as"});
+      my $found = 0;
+      foreach my $dir (@$fla_path_ref, as_classpath())
+      {
+         my $f = File::Spec->catdir(File::Spec->splitdir($dir), split(/\./, $imp));
+         $f .= ".as";
+         if (-f $f)
+         {
+            _log("  instance $f from $checkfile\n");
+            push @deps, $f;
+            $found = 1;
+            last;
+         }
+      }
+      return [$imp] if (!$found);
+   }
+   return @deps;
 }
 
 =item as_classpath
@@ -332,8 +395,8 @@ sub as_classpath
       my $prefs_file = flash_prefs_path();
       if (!$prefs_file || ! -f $prefs_file)
       {
-         #print "Failed to locate the Flash prefs file\n" if ($verbose);
-         return ();
+         #_log("Failed to locate the Flash prefs file\n");
+         return (".");
       }
 
       my $conf_dir = flash_config_path();
@@ -349,7 +412,7 @@ sub as_classpath
             {
                if (!$conf_dir)
                {
-                  print "Failed to identify the UserConfig dir for '$_'\n" if ($verbose);
+                  _log("Failed to identify the UserConfig dir for '$_'\n");
                }
                else
                {
@@ -357,7 +420,7 @@ sub as_classpath
                }
             }
             $cached_as_classpath = \@dirs;
-            print "Classpath: @{$cached_as_classpath}\n" if ($verbose);
+            _log("Classpath: @{$cached_as_classpath}\n");
             last;
          }
       }
