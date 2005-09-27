@@ -1,6 +1,7 @@
 index.html
 Build.PL
 ChangeLog
+example/broken.fla
 example/example.fla
 example/lib/example1/redherring.as
 example/lib/example1/testclass.as
@@ -17,6 +18,7 @@ example/lib/example6/testclass.as
 example/lib/example7/redherring.as
 example/lib/example7/testclass.as
 example/lib/includetest.as
+example/simple.fla
 lib/SWF/NeedsRecompile.pm
 LICENSE
 Makefile.PL

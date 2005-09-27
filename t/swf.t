@@ -89,7 +89,13 @@ foreach my $file (@files)
 sub _touch
 {
    my $name = shift;
-   local *OUT;
-   open(OUT, "> $name") or die;
-   close(OUT);
+
+   if (! -f $name)
+   {
+      local *OUT;
+      open(OUT, "> $name") or die;
+      close(OUT);
+   }
+   my $now = time();
+   utime $now, $now, $name;
 }

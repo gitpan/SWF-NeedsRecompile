@@ -7,7 +7,7 @@ use File::Basename;
 use Carp;
 use Exporter;
 
-our $VERSION = "1.01";
+our $VERSION = "1.02";
 our @ISA = qw(Exporter);
 our @EXPORT;
 our @EXPORT_OK = qw(check_files as_classpath flash_prefs_path flash_config_path);
