@@ -17,7 +17,7 @@ END { unlink $_ for (@tempfiles); }
 # HACK: remove the OS dependency so we can test just the file
 # functionality without the user's classpath (if any) getting in the
 # way
-%SWF::NeedsRecompile::os_paths = ();
+%{SWF::NeedsRecompile->_get_os_paths()} = ();
 
 ### First some basic tests
 
@@ -92,9 +92,8 @@ sub _touch
 
    if (! -f $name)
    {
-      local *OUT;
-      open(OUT, "> $name") or die;
-      close(OUT);
+      open my $out_fh, '>', $name or die;
+      close $out_fh;
    }
    my $now = time();
    utime $now, $now, $name;

@@ -2,24 +2,46 @@ package SWF::NeedsRecompile;
 
 use warnings;
 use strict;
-use File::Spec;
-use File::Basename;
 use Carp;
-use Exporter;
+use English qw(-no_match_vars);
+use File::Spec qw();
+use File::Slurp qw();
+use Regexp::Common qw(comment);
 
-our $VERSION = "1.02";
-our @ISA = qw(Exporter);
+our $VERSION = '1.03';
+
+use base qw(Exporter);
 our @EXPORT;
-our @EXPORT_OK = qw(check_files as_classpath flash_prefs_path flash_config_path);
-our $verbose = 0;
+our @EXPORT_OK = qw(check_files
+                    as_classpath
+                    flash_prefs_path
+                    flash_config_path);
 
-our %os_paths = (
+my $verbose = $ENV{SWFCOMPILE_VERBOSE} ? 1 : 0;
+my %os_paths = (
    darwin => {
       pref => ["$ENV{HOME}/Library/Preferences/Flash 7 Preferences"],
       conf => ["$ENV{HOME}/Library/Application Support/Macromedia/Flash MX 2004/en/Configuration"],
    },
    # TODO: add more entries for "MSWin32", etc
 );
+# These are mostly Flash 6 component classes
+my %exceptions = map {$_=>1} qw(
+   DataProviderClass
+   FScrollSelectListClass
+   FSelectableItemClass
+   FSelectableListClass
+   FStyleFormat
+   FUIComponentClass
+   Tween
+);
+
+sub _get_os_paths  # FOR TESTING ONLY!!!
+{
+   return \%os_paths;
+}
+
+=for stopwords Actionscript Classpath MTASC MX SWF .swf .fla timestamp wildcards
 
 =head1 NAME 
 
@@ -97,10 +119,14 @@ C<import com.example.Foo;>
 
 sub _log
 {
-   print @_ if ($verbose);
+   if ($verbose)
+   {
+      print @_, "\n";
+   }
+   return;
 }
 
-=item check_files FILE, FILE, ...
+=item check_files($file, $file, ...)
 
 Examine a list of .swf and/or .fla files and return the filenames of
 the ones that need to be recompiled.
@@ -115,17 +141,17 @@ sub check_files
 {
    my @files = @_;
 
-   my @needsRecompile;
+   my @needs_recompile;
 
    # The depends hash is a cache of the #include and import lines in each file
    my %depends = ();
 
    foreach my $file (@files)
    {
-      (my $base = $file) =~ s/\.(?:swf|fla)$//;
+      (my $base = $file) =~ s/\.(?:swf|fla)\z//xms;
       if ($base eq $file)
       {
-         _log("$file is not a .swf or a .fla file\n");
+         _log("$file is not a .swf or a .fla file");
          next;
       }
       my $swf = "$base.swf";
@@ -134,7 +160,7 @@ sub check_files
       # Do the simple case first
       if (! -e $swf)
       {
-         push @needsRecompile, $file;
+         push @needs_recompile, $file;
          next;
       }
 
@@ -152,39 +178,44 @@ sub check_files
 
          if (! -f $checkfile)
          {
-            _log("Failed to locate file needed to compile $swf:  $checkfile\n");
+            _log("Failed to locate file needed to compile $swf:  $checkfile");
             $up_to_date = 0;
             last;
          }
 
-         _log("check $checkfile\n");
+         _log("check $checkfile");
          $up_to_date = _up_to_date($checkfile, $swf);
          $checked{$checkfile} = 1;
          if (!$up_to_date)
          {
-            _log("Failed up to date check for $checkfile vs. $swf\n");
+            _log("Failed up to date check for $checkfile vs. $swf");
             last;
          }
 
          if (! -r $checkfile)
          {
-            _log("Unreadable file $checkfile\n");
+            _log("Unreadable file $checkfile");
             last;
          }
 
          if (!$depends{$checkfile})
          {
-            _log("do deps for $checkfile\n");
+            _log("do deps for $checkfile");
             $depends{$checkfile} = [];
-            local *FILE;
-            local $/; # Slurp files whole
-            open(FILE, $checkfile) || croak "This shouldn't happen since the file is supposed to be readable";
-            my $content = <FILE>;
-            close FILE;
-
+            my $content = File::Slurp::read_file($checkfile)
+                || die 'This should not happen since the file is supposed to be readable';
             my %imported_files;
             my %seen;
             
+            if ($checkfile =~ m/\.fla\z/ixms)
+            {
+               $content =~ s/$RE{comment}{C}//gxms;
+            }
+            else
+            {
+               $content =~ s/$RE{comment}{ECMAScript}//gxms;
+            }
+
             # check for include and import statements and instantiations via "new"
             my @deps = (
                _get_includes($checkfile, \$content, \%seen),
@@ -194,7 +225,7 @@ sub check_files
             my @problems = map {@$_} grep {ref $_} @deps;
             if (@problems > 0)
             {
-               _log("Failed to locate dependencies in $checkfile: @problems\n");
+               _log("Failed to locate dependencies in $checkfile: @problems");
                $up_to_date = 0;
                last;
             }
@@ -203,32 +234,28 @@ sub check_files
          push @check, @{$depends{$checkfile}};
       }
 
-      unless ($up_to_date)
+      if (!$up_to_date)
       {
-         push @needsRecompile, $file;
+         push @needs_recompile, $file;
       }
    }
-   return @needsRecompile;
+   return @needs_recompile;
 }
 
 sub _get_fla_classpaths
 {
    my $fla = shift;
 
-   local *FLA;
-   local $/; # Slurp files whole
    my @paths;
-   if (open(FLA, $fla))
+   if (-f $fla && (my $content = File::Slurp::read_file($fla)))
    {
-      my $content = <FLA>;
-      close FLA;
       # Limitation: the path must be purely ASCII or this doesn't work
-      @paths = $content =~ /V\0e\0c\0t\0o\0r\0:\0:\0P\0a\0c\0k\0a\0g\0e\0 \0P\0a\0t\0h\0s\0....((?:[^\0]\0)*)/g;
+      @paths = $content =~ m/V\0e\0c\0t\0o\0r\0:\0:\0P\0a\0c\0k\0a\0g\0e\0\ \0P\0a\0t\0h\0s\0....((?:[^\0]\0)*)/gxms;
       if (@paths > 0)
       {
          my $path = $paths[-1];
-         $path =~ s/\0//g;
-         @paths = split /;/, $path;
+         $path =~ s/\0//gxms;
+         @paths = split /;/xms, $path;
          require File::Spec;
          for (@paths)
          {
@@ -242,7 +269,7 @@ sub _get_fla_classpaths
             }
          }
       }
-      _log("FLA Paths: @paths\n");
+      _log("FLA Paths: @paths");
    }
    return @paths;
 }
@@ -257,12 +284,12 @@ sub _get_includes
 
    # Check both ascii and ascii-unicode, supporting Flash MX and 2004 .fla files
    # This will fail for non-ascii filenames
-   my @matches = $$content_ref =~ /\#\0?i\0?n\0?c\0?l\0?u\0?d\0?e\0?(?:\s\0?)+\"\0?([^\"\r\n]+?)\"/gs;
+   my @matches = $$content_ref =~ m/\#\0?i\0?n\0?c\0?l\0?u\0?d\0?e\0?(?:\s\0?)+\"\0?([^\"\r\n]+?)\"/gxms;
    foreach my $inc (@matches)
    {
       next if ($seen_ref->{$inc}++); # speedup
       # This is a hack.  Strip real Unicode down to ASCII
-      $inc =~ s/\0//g;
+      $inc =~ s/\0//gxms;
       if ($inc)
       {
          my $file = $inc;
@@ -279,7 +306,7 @@ sub _get_includes
             return [$inc] if (! -f $file);
          }
          push @deps, $file;
-         _log("#include $inc from $checkfile\n");
+         _log("#include $inc from $checkfile");
       }
    }
    return @deps;
@@ -294,34 +321,35 @@ sub _get_imports
    my $seen_ref = shift;
 
    my @deps;
-   my @matches = $$content_ref =~ /i\0?m\0?p\0?o\0?r\0?t\0?(?:\s\0?)+((?:[^\;\0\s]\0?)+);/gs;
+   my @matches = $$content_ref =~ m/i\0?m\0?p\0?o\0?r\0?t\0?(?:\s\0?)+((?:[^\;\0\s]\0?)+);/gxms;
    foreach my $imp (@matches)
    {
       next if ($seen_ref->{$imp}++); # speedup
       # This is a hack.  Strip real Unicode down to ASCII
-      $imp =~ s/\0//g;
-      _log("import $imp from $checkfile\n");
+      $imp =~ s/\0//gxms;
+      _log("import $imp from $checkfile");
       my $found = 0;
       foreach my $dir (@$fla_path_ref, as_classpath())
       {
-         my $f = File::Spec->catdir(File::Spec->splitdir($dir), split(/\./, $imp));
-         if ($f =~ /\*$/)
+         my $f = File::Spec->catdir(File::Spec->splitdir($dir), split /\./xms, $imp);
+         if ($f =~ m/\*\z/xms)
          {
             my @d = File::Spec->splitdir($f);
             pop @d;
             $f = File::Spec->catdir(@d);
-            local *DIR;
-            if (opendir(DIR, $f))
+            if (-d $f)
             {
-               my @as = grep /\.as$/, readdir(DIR);
-               closedir DIR;
+               my @as = grep {m/\.as\z/xms} File::Slurp::read_dir($f);
                
-               $imported_file_ref->{$_} = 1 for @as;
+               for my $file (@as)
+               {
+                  $imported_file_ref->{$file} = 1;
+               }
                @as = map {File::Spec->catfile($f, $_)} @as;
                
-               for (@as)
+               for my $file (@as)
                {
-                  _log("  import $_ from $checkfile\n");
+                  _log("  import $file from $checkfile");
                }
                push @deps, @as;
             }
@@ -329,12 +357,12 @@ sub _get_imports
          }
          else
          {
-            $f .= ".as";
+            $f .= '.as';
             if (-f $f)
             {
-               my @p = split /\./, $imp;
-               $imported_file_ref->{$p[-1].".as"} = 1;
-               _log("  import $f from $checkfile\n");
+               my @p = split /\./xms, $imp;
+               $imported_file_ref->{$p[-1].'.as'} = 1;
+               _log("  import $f from $checkfile");
                push @deps, $f;
                $found = 1;
                last;
@@ -354,23 +382,30 @@ sub _get_instantiations
    my $imported_file_ref = shift;
    my $seen_ref = shift;
 
+   # Get a list of all classes defined in this file
+   my @class_matches = $$content_ref =~ m/c\0?l\0?a\0?s\0?s\0?(?:\s\0?)+((?:[^;\s\0]\0?)+)/gxms;
+   my @classes = map {s/\0//gxms; $_} @class_matches;
+
    my @deps;
-   my @matches = $$content_ref =~ /n\0?e\0?w\0?(?:\s\0?)+((?:[^\(;\s\0]\0?)+)\(/gs;
+   my @matches = $$content_ref =~ m/n\0?e\0?w\0?(?:\s\0?)+((?:[\w\.]\0?)+)\(/gxms;
    foreach my $imp (@matches)
    {
       next if ($seen_ref->{$imp}++); # speedup
       # This is a hack.  Strip real Unicode down to ASCII
-      $imp =~ s/\0//g;
-      _log("instance $imp from $checkfile\n");
-      next if ($imported_file_ref->{$imp.".as"});
+      $imp =~ s/\0//gxms;
+      next if ($exceptions{$imp});
+      _log("instance $imp from $checkfile");
+      next if ($imported_file_ref->{$imp.'.as'});
+      # Is this class implemented in this very file?
+      next if (grep {$_ eq $imp || m/\.\Q$imp\E\z/xms} @classes);
       my $found = 0;
       foreach my $dir (@$fla_path_ref, as_classpath())
       {
-         my $f = File::Spec->catdir(File::Spec->splitdir($dir), split(/\./, $imp));
-         $f .= ".as";
+         my $f = File::Spec->catdir(File::Spec->splitdir($dir), split /\./xms, $imp);
+         $f .= '.as';
          if (-f $f)
          {
-            _log("  instance $f from $checkfile\n");
+            _log("  instance $f from $checkfile");
             push @deps, $f;
             $found = 1;
             last;
@@ -381,7 +416,7 @@ sub _get_instantiations
    return @deps;
 }
 
-=item as_classpath
+=item $pkg->as_classpath()
 
 Returns a list of Classpath directories specified globally in Flash.
 
@@ -395,41 +430,38 @@ sub as_classpath
       my $prefs_file = flash_prefs_path();
       if (!$prefs_file || ! -f $prefs_file)
       {
-         #_log("Failed to locate the Flash prefs file\n");
-         return (".");
+         #_log('Failed to locate the Flash prefs file');
+         return q{.};
       }
 
       my $conf_dir = flash_config_path();
-      local *IN;
-      open(IN, $prefs_file) || croak "Failed to open the Flash prefs file";
-      while (<IN>)
+      for (File::Slurp::read_file($prefs_file))
       {
-         if (/<Package_Paths>(.*?)<\/Package_Paths>/)
+         if (m/<Package_Paths>(.*?)<\/Package_Paths>/xms)
          {
             my $cp = $1;
-            my @dirs = split /;/, $cp;
+            my @dirs = split /;/xms, $cp;
             for (@dirs)
             {
                if (!$conf_dir)
                {
-                  _log("Failed to identify the UserConfig dir for '$_'\n");
+                  _log("Failed to identify the UserConfig dir for '$_'");
                }
                else
                {
-                  s/\$\(UserConfig\)/$conf_dir/;
+                  s/\$\(UserConfig\)/$conf_dir/xms;
                }
             }
             $cached_as_classpath = \@dirs;
-            _log("Classpath: @{$cached_as_classpath}\n");
+            _log("Classpath: @{$cached_as_classpath}");
             last;
          }
       }
-      close IN;
    }
    return @$cached_as_classpath;
 }
 
-=item flash_prefs_path
+=item $pkg->flash_prefs_path()
 
 Returns the filename of the Flash preferences XML file.
 
@@ -437,10 +469,10 @@ Returns the filename of the Flash preferences XML file.
 
 sub flash_prefs_path
 {
-   return _get_path("pref");
+   return _get_path('pref');
 }
 
-=item flash_config_path
+=item $pkg->flash_config_path()
 
 Returns the path where Flash stores all of its class prototypes.
 
@@ -448,7 +480,21 @@ Returns the path where Flash stores all of its class prototypes.
 
 sub flash_config_path
 {
-   return _get_path("conf");
+   return _get_path('conf');
+}
+
+=item $pkg->set_verbose(BOOLEAN)
+
+Changes the verbosity of the whole module.  Defaults to false.
+
+=cut
+
+sub set_verbose
+{
+   my $pkg           = shift;
+   my $new_verbosity = shift;
+   $verbose = $new_verbosity ? 1 : 0;
+   return;
 }
 
 # Internal helper for the above two functions
@@ -456,19 +502,19 @@ sub _get_path
 {
    my $type = shift;
 
-   my $os = $os_paths{$^O};
+   my $os = $os_paths{$OSNAME};   # aka $^O
    if (!$os)
    {
-      return undef;
+      return;
       #croak "Operating system $^O is not currently supported.  We support:\n   ".
-      #    join(" ", sort keys %os_paths)."\n";
+      #    join(q{ }, sort keys %os_paths)."\n";
    }
    my $list = $os->{$type};
    my @match = grep { -e $_ } @$list;
    if (@match == 0)
    {
-      return undef;
-      #croak join("\n  ", "Failed to find any of the following:", @$list)."\n";
+      return;
+      #croak join("\n  ", 'Failed to find any of the following:', @$list)."\n";
    }
    return $match[0];
 }
@@ -489,12 +535,28 @@ __END__
 
 =back
 
+=head1 BUGS AND LIMITATIONS
+
+This module tries to ignore dependencies specified inside comments like these:
+
+   /* #include "foo.as" */
+   // var inst = new Some.Class();
+
+but for reasons I don't understand, searching for the latter style of
+comments inside C<.fla> files can cause a (seemingly) infinite loop.
+So, as a hack we DO NOT ignore C<//...> style comments in Actionscript
+that is embedded inside of C<.fla> files.  This can lead to spurious
+errors.  Perhaps this is a problem with Regexp::Common::comment or just
+that some C<.fla> files have too few line endings?
+
 =head1 SEE ALSO
 
-L<Module::Build::Flash> uses this module.
+Module::Build::Flash uses this module.
 
 =head1 AUTHOR
 
 Clotho Advanced Media Inc., I<cpan@clotho.com>
 
 Primary developer: Chris Dolan
+
+=cut
