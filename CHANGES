@@ -1,0 +1,33 @@
+Revision history for Perl extension SWF::NeedsRecompile
+
+1.04  15 Dec 2005
+      [INCOMPATIBLE]
+      - Change envvar from SWFCOMPILE_VERBOSE to SWFCOMPILE_VERBOSITY
+      [ENHANCEMENTS]
+      - Split log messages into errors and info
+      - Added set_verbosity and get_verbosity methods
+
+1.03  28 Nov 2005
+      [ENHANCEMENTS]
+      - Support for SWFCOMPILE_VERBOSE envvar
+      [FIXES]
+      - Ignore code inside comments comments
+      - Only ignore "/* ... */" comments in .fla files because the "// ..."
+        regexp causes a seemingly-infinite loop
+      - Add an empirical list of Flash 6 classes to ignore
+      - Don't recurse if class instantiates itself
+      [INTERNALS]
+      - Perl::Critic compliance
+
+1.02  27 Sep 2005
+      [FIXES]
+      - Add omitted test to MANIFEST
+
+1.01  21 Sep 2005
+      [ENHANCEMENTS]
+      - More tests
+      [INTERNALS]
+      - Refactor huge functions into manageable pieces
+
+1.00  10 Aug 2005
+      First public release

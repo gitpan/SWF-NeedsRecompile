@@ -8,7 +8,7 @@ use File::Spec qw();
 use File::Slurp qw();
 use Regexp::Common qw(comment);
 
-our $VERSION = '1.03';
+our $VERSION = '1.04';
 
 use base qw(Exporter);
 our @EXPORT;
@@ -17,7 +17,9 @@ our @EXPORT_OK = qw(check_files
                     flash_prefs_path
                     flash_config_path);
 
-my $verbose = $ENV{SWFCOMPILE_VERBOSE} ? 1 : 0;
+my $verbosity = 0;
+__PACKAGE__->set_verbosity($ENV{SWFCOMPILE_VERBOSITY});
+
 my %os_paths = (
    darwin => {
       pref => ["$ENV{HOME}/Library/Preferences/Flash 7 Preferences"],
@@ -115,17 +117,6 @@ C<import com.example.Foo;>
 
 =over
 
-=cut
-
-sub _log
-{
-   if ($verbose)
-   {
-      print @_, "\n";
-   }
-   return;
-}
-
 =item check_files($file, $file, ...)
 
 Examine a list of .swf and/or .fla files and return the filenames of
@@ -151,7 +142,7 @@ sub check_files
       (my $base = $file) =~ s/\.(?:swf|fla)\z//xms;
       if ($base eq $file)
       {
-         _log("$file is not a .swf or a .fla file");
+         _log(1, "$file is not a .swf or a .fla file");
          next;
       }
       my $swf = "$base.swf";
@@ -160,6 +151,7 @@ sub check_files
       # Do the simple case first
       if (! -e $swf)
       {
+         _log(1, "No file $swf");
          push @needs_recompile, $file;
          next;
       }
@@ -178,37 +170,39 @@ sub check_files
 
          if (! -f $checkfile)
          {
-            _log("Failed to locate file needed to compile $swf:  $checkfile");
+            _log(1, "Failed to locate file needed to compile $swf:  $checkfile");
             $up_to_date = 0;
             last;
          }
 
-         _log("check $checkfile");
+         _log(2, "check $checkfile");
          $up_to_date = _up_to_date($checkfile, $swf);
          $checked{$checkfile} = 1;
          if (!$up_to_date)
          {
-            _log("Failed up to date check for $checkfile vs. $swf");
+            _log(1, "Failed up to date check for $checkfile vs. $swf");
             last;
          }
 
          if (! -r $checkfile)
          {
-            _log("Unreadable file $checkfile");
+            _log(1, "Unreadable file $checkfile");
             last;
          }
 
          if (!$depends{$checkfile})
          {
-            _log("do deps for $checkfile");
+            _log(2, "do deps for $checkfile");
             $depends{$checkfile} = [];
-            my $content = File::Slurp::read_file($checkfile)
-                || die 'This should not happen since the file is supposed to be readable';
+            my $content = File::Slurp::read_file($checkfile);
             my %imported_files;
             my %seen;
             
             if ($checkfile =~ m/\.fla\z/ixms)
             {
+               # HACK: use C regexp because the ECMAScript regexp can
+               # cause an infinite loop on some .fla files.
+               # See BUGS AND LIMITATIONS
                $content =~ s/$RE{comment}{C}//gxms;
             }
             else
@@ -225,7 +219,7 @@ sub check_files
             my @problems = map {@$_} grep {ref $_} @deps;
             if (@problems > 0)
             {
-               _log("Failed to locate dependencies in $checkfile: @problems");
+               _log(1, "Failed to locate dependencies in $checkfile: @problems");
                $up_to_date = 0;
                last;
             }
@@ -250,26 +244,30 @@ sub _get_fla_classpaths
    if (-f $fla && (my $content = File::Slurp::read_file($fla)))
    {
       # Limitation: the path must be purely ASCII or this doesn't work
-      @paths = $content =~ m/V\0e\0c\0t\0o\0r\0:\0:\0P\0a\0c\0k\0a\0g\0e\0\ \0P\0a\0t\0h\0s\0....((?:[^\0]\0)*)/gxms;
-      if (@paths > 0)
+      my @matches = $content =~ m/V\0e\0c\0t\0o\0r\0:\0:\0P\0a\0c\0k\0a\0g\0e\0\ \0P\0a\0t\0h\0s\0....((?:[^\0]\0)*)/gxms;
+      my %seen;
+      for my $match (@matches)
       {
-         my $path = $paths[-1];
-         $path =~ s/\0//gxms;
-         @paths = split /;/xms, $path;
+         # Hack: downgrade unicode to ascii
+         $match =~ s/\0//gxms;
+         next if ($match eq q{});
+         my @search_paths = split /;/xms, $match;
          require File::Spec;
-         for (@paths)
+         for my $path (@search_paths)
          {
-            if (!File::Spec->file_name_is_absolute($_))
+            if (!File::Spec->file_name_is_absolute($path))
             {
-               my $dir = [File::Spec->splitpath($fla)]->[1];
-               if ($dir)
+               my $root = [File::Spec->splitpath($fla)]->[1];
+               if ($root)
                {
-                  $_ = File::Spec->rel2abs($_, $dir);
+                  $path = File::Spec->rel2abs($path, $root);
                }
             }
+            next if ($seen{$path}++);
+            push @paths, $path;
          }
       }
-      _log("FLA Paths: @paths");
+      _log(2, "FLA Paths: @paths");
    }
    return @paths;
 }
@@ -306,7 +304,7 @@ sub _get_includes
             return [$inc] if (! -f $file);
          }
          push @deps, $file;
-         _log("#include $inc from $checkfile");
+         _log(2, "#include $inc from $checkfile");
       }
    }
    return @deps;
@@ -327,7 +325,7 @@ sub _get_imports
       next if ($seen_ref->{$imp}++); # speedup
       # This is a hack.  Strip real Unicode down to ASCII
       $imp =~ s/\0//gxms;
-      _log("import $imp from $checkfile");
+      _log(2, "import $imp from $checkfile");
       my $found = 0;
       foreach my $dir (@$fla_path_ref, as_classpath())
       {
@@ -349,7 +347,7 @@ sub _get_imports
                
                for my $file (@as)
                {
-                  _log("  import $file from $checkfile");
+                  _log(2, "  import $file from $checkfile");
                }
                push @deps, @as;
             }
@@ -362,7 +360,7 @@ sub _get_imports
             {
                my @p = split /\./xms, $imp;
                $imported_file_ref->{$p[-1].'.as'} = 1;
-               _log("  import $f from $checkfile");
+               _log(2, "  import $f from $checkfile");
                push @deps, $f;
                $found = 1;
                last;
@@ -394,7 +392,7 @@ sub _get_instantiations
       # This is a hack.  Strip real Unicode down to ASCII
       $imp =~ s/\0//gxms;
       next if ($exceptions{$imp});
-      _log("instance $imp from $checkfile");
+      _log(2, "instance $imp from $checkfile");
       next if ($imported_file_ref->{$imp.'.as'});
       # Is this class implemented in this very file?
       next if (grep {$_ eq $imp || m/\.\Q$imp\E\z/xms} @classes);
@@ -405,7 +403,7 @@ sub _get_instantiations
          $f .= '.as';
          if (-f $f)
          {
-            _log("  instance $f from $checkfile");
+            _log(2, "  instance $f from $checkfile");
             push @deps, $f;
             $found = 1;
             last;
@@ -430,7 +428,7 @@ sub as_classpath
       my $prefs_file = flash_prefs_path();
       if (!$prefs_file || ! -f $prefs_file)
       {
-         #_log('Failed to locate the Flash prefs file');
+         #_log(2, 'Failed to locate the Flash prefs file');
          return q{.};
       }
 
@@ -445,7 +443,7 @@ sub as_classpath
             {
                if (!$conf_dir)
                {
-                  _log("Failed to identify the UserConfig dir for '$_'");
+                  _log(2, "Failed to identify the UserConfig dir for '$_'");
                }
                else
                {
@@ -453,7 +451,7 @@ sub as_classpath
                }
             }
             $cached_as_classpath = \@dirs;
-            _log("Classpath: @{$cached_as_classpath}");
+            _log(2, "Classpath: @{$cached_as_classpath}");
             last;
          }
       }
@@ -483,9 +481,19 @@ sub flash_config_path
    return _get_path('conf');
 }
 
-=item $pkg->set_verbose(BOOLEAN)
+=item $pkg->set_verbose($boolean)
 
-Changes the verbosity of the whole module.  Defaults to false.
+=item $pkg->set_verbosity($number)
+
+Changes the verbosity of the whole module.  Defaults to false.  Set to
+a number higher than 1 to get very verbose output.
+
+The C<SWFCOMPILE_VERBOSITY> environment variable sets this at module
+load time.
+
+The default is C<0> (silent), but we recommend setting verbosity to
+C<1>, which emits error messages.  Setting to C<2> also emits
+debugging messages.
 
 =cut
 
@@ -493,8 +501,31 @@ sub set_verbose
 {
    my $pkg           = shift;
    my $new_verbosity = shift;
-   $verbose = $new_verbosity ? 1 : 0;
+
+   $pkg->set_verbosity($new_verbosity ? 1 : 0);
    return;
+}
+sub set_verbosity
+{
+   my $pkg           = shift;
+   my $new_verbosity = shift;
+
+   $verbosity = !$new_verbosity                     ? 0
+              : $new_verbosity =~ m/\A (\d+) \z/xms ? $1
+              :                                       1;
+   return;
+}
+
+=item $pkg->get_verbosity()
+
+Returns the current verbosity number.
+
+=cut
+
+sub get_verbosity
+{
+   my $pkg = shift;
+   return $verbosity;
 }
 
 # Internal helper for the above two functions
@@ -530,6 +561,17 @@ sub _up_to_date
    return 1;
 }
 
+sub _log
+{
+   my $level = shift;
+
+   if ($verbosity >= $level)
+   {
+      print @_, "\n";
+   }
+   return;
+}
+
 1;
 __END__
 
@@ -543,11 +585,12 @@ This module tries to ignore dependencies specified inside comments like these:
    // var inst = new Some.Class();
 
 but for reasons I don't understand, searching for the latter style of
-comments inside C<.fla> files can cause a (seemingly) infinite loop.
-So, as a hack we DO NOT ignore C<//...> style comments in Actionscript
-that is embedded inside of C<.fla> files.  This can lead to spurious
-errors.  Perhaps this is a problem with Regexp::Common::comment or just
-that some C<.fla> files have too few line endings?
+comments inside binary C<.fla> files can cause a (seemingly) infinite
+loop.  So, as a hack we DO NOT ignore C<//...> style comments in
+Actionscript that is embedded inside of C<.fla> files.  This can lead
+to spurious errors.  Perhaps this is a problem with
+Regexp::Common::comment or just that some C<.fla> files have too few
+line endings?
 
 =head1 SEE ALSO
 
