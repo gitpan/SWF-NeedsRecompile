@@ -1,7 +1,16 @@
-Revision history for Perl extension SWF::NeedsRecompile
+Revision history for Perl module SWF::NeedsRecompile
+
+1.05  20 May 2007
+      [ENHANCEMENTS]
+      - Use File::HomeDir instead of $ENV{HOME}
+      - Better use of File::Spec
+      [FIXES]
+      - Forgot to declare dependency on Regexp::Common
+      [INTERNALS]
+      - Changed maintainer
 
 1.04  15 Dec 2005
-      [INCOMPATIBLE]
+      [INCOMPATIBILITIES]
       - Change envvar from SWFCOMPILE_VERBOSE to SWFCOMPILE_VERBOSITY
       [ENHANCEMENTS]
       - Split log messages into errors and info

@@ -2,14 +2,18 @@
 
 use warnings;
 use strict;
+use File::Spec;
 
 BEGIN
 {
    use Test::More tests => 40;
-   use_ok("SWF::NeedsRecompile", "check_files");
+   use_ok('SWF::NeedsRecompile', 'check_files');
 }
 
 #$SWF::NeedsRecompile::verbose = 1;
+
+my $exampledir = File::Spec->catdir('t', 'examples');
+sub egfile { File::Spec->catfile($exampledir, @_); }
 
 my @tempfiles;
 END { unlink $_ for (@tempfiles); }
@@ -21,34 +25,34 @@ END { unlink $_ for (@tempfiles); }
 
 ### First some basic tests
 
-is_deeply([check_files("foo.txt")], [], "invalid filename");
-is_deeply([check_files("foo.swf")], ["foo.swf"], "non-existent swf");
+is_deeply([check_files(egfile('foo.txt'))], [], 'invalid filename');
+is_deeply([check_files(egfile('foo.swf'))], [egfile('foo.swf')], 'non-existent swf');
 
-unlink "example/simple.swf";
-is_deeply([check_files("example/simple.fla")], ["example/simple.fla"], "simple fla");
-_touch("example/simple.swf");
-push @tempfiles, "example/simple.swf";
-is_deeply([check_files("example/simple.fla")], [], "simple fla");
+unlink egfile('simple.swf');
+is_deeply([check_files(egfile('simple.fla'))], [egfile('simple.fla')], 'simple fla');
+_touch(egfile('simple.swf'));
+push @tempfiles, egfile('simple.swf');
+is_deeply([check_files(egfile('simple.fla'))], [], 'simple fla');
 
-unlink "example/broken.swf";
-is_deeply([check_files("example/broken.fla")], ["example/broken.fla"], "broken fla");
-_touch("example/broken.swf");
-push @tempfiles, "example/broken.swf";
-is_deeply([check_files("example/broken.fla")], ["example/broken.fla"], "broken fla");
+unlink egfile('broken.swf');
+is_deeply([check_files(egfile('broken.fla'))], [egfile('broken.fla')], 'broken fla');
+_touch(egfile('broken.swf'));
+push @tempfiles, egfile('broken.swf');
+is_deeply([check_files(egfile('broken.fla'))], [egfile('broken.fla')], 'broken fla');
 
-_touch("example/missing.swf");
-push @tempfiles, "example/missing.swf";
-is_deeply([check_files("example/missing.fla")], ["example/missing.fla"], "missing fla");
+_touch(egfile('missing.swf'));
+push @tempfiles, egfile('missing.swf');
+is_deeply([check_files(egfile('missing.fla'))], [egfile('missing.fla')], 'missing fla');
 
 ### Now the more sophisticated tests
 
 # Set up some bogus file timestamps
-my $new = time();
-my $middle = $new - 60*60;
-my $old = $middle - 60*60;
+my $new = time;
+my $middle = $new - 60 * 60;
+my $old = $middle - 60 * 60;
 
-my $fla = "example/example.fla";
-my $swf = "example/example.swf";
+my $fla = egfile('example.fla');
+my $swf = egfile('example.swf');
 
 _touch($swf);
 push @tempfiles, $swf;
@@ -60,13 +64,13 @@ push @tempfiles, $swf;
 my @herrings = (2,3,5,6,7);
 
 # Build an easier-to-use version of the above
-my %is_herring = map { ("example/lib/example$_/redherring.as" => 1) } @herrings;
+my %is_herring = map { egfile('lib', 'example'.$_, 'redherring.as') => 1 } @herrings;
 
 my @files = (
    $fla,
-   "example/lib/includetest.as",
-   map({"example/lib/example$_/testclass.as"} 1..7),
-   map({"example/lib/example$_/redherring.as"} 1..7),
+   egfile('lib', 'includetest.as'),
+   (map {egfile('lib', 'example'.$_, 'testclass.as')} 1..7),
+   (map {egfile('lib', 'example'.$_, 'redherring.as')} 1..7),
 );
 
 # For each dependency listed in the @files array, try the check twice:

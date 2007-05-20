@@ -2,33 +2,39 @@ package SWF::NeedsRecompile;
 
 use warnings;
 use strict;
+use 5.006;    # tested only on 5.8.6+, but *should* work on older perls
 use Carp;
 use English qw(-no_match_vars);
-use File::Spec qw();
+use File::Spec;
 use File::Slurp qw();
 use Regexp::Common qw(comment);
+use File::HomeDir;
 
-our $VERSION = '1.04';
+our $VERSION = '1.05';
 
 use base qw(Exporter);
-our @EXPORT;
-our @EXPORT_OK = qw(check_files
-                    as_classpath
-                    flash_prefs_path
-                    flash_config_path);
+our @EXPORT_OK = qw(
+   check_files
+   as_classpath
+   flash_prefs_path
+   flash_config_path
+);
+
+my $cached_as_classpath;
 
 my $verbosity = 0;
 __PACKAGE__->set_verbosity($ENV{SWFCOMPILE_VERBOSITY});
 
 my %os_paths = (
    darwin => {
-      pref => ["$ENV{HOME}/Library/Preferences/Flash 7 Preferences"],
-      conf => ["$ENV{HOME}/Library/Application Support/Macromedia/Flash MX 2004/en/Configuration"],
+      pref => [File::Spec->catfile(File::HomeDir->my_home, 'Library', 'Preferences', 'Flash 7 Preferences')],
+      conf => [File::Spec->catfile(File::HomeDir->my_home, 'Library', 'Application Support', 'Macromedia',
+                                   'Flash MX 2004', 'en', 'Configuration')],
    },
    # TODO: add more entries for "MSWin32", etc
 );
 # These are mostly Flash 6 component classes
-my %exceptions = map {$_=>1} qw(
+my %exceptions = map { $_ => 1 } qw(
    DataProviderClass
    FScrollSelectListClass
    FSelectableItemClass
@@ -38,12 +44,12 @@ my %exceptions = map {$_=>1} qw(
    Tween
 );
 
-sub _get_os_paths  # FOR TESTING ONLY!!!
+sub _get_os_paths    # FOR TESTING ONLY!!!
 {
    return \%os_paths;
 }
 
-=for stopwords Actionscript Classpath MTASC MX SWF .swf .fla timestamp wildcards
+=for stopwords Actionscript Classpath MTASC MX SWF .swf .fla timestamp wildcards UCS2
 
 =head1 NAME 
 
@@ -51,25 +57,13 @@ SWF::NeedsRecompile - Tests if any SWF or FLA file dependencies have changed
 
 =head1 LICENSE
 
-Copyright Clotho Advanced Media Inc.
+Copyright 2002-2006 Clotho Advanced Media, Inc.,
+L<http://www.clotho.com/>
 
-This software is released by Clotho Advanced Media, Inc. under the same
-terms as Perl itself.  That means that it is dual-licensed under the
-Artistic license and the GPL, and that you can redistribute it and/or
-modify it under the terms of either or both of those licenses.  See
-the "LICENSE" file, or visit http://www.clotho.com/code/Perl
+Copyright 2007 Chris Dolan
 
-The definitive source of Clotho Advanced Media software is
-http://www.clotho.com/code/
-
-All of our software is also available under commercial license.  If
-the Artisic license or the GPL does not meet the needs of your
-project, please contact us at info@clotho.com or visit the above URL.
-
-We release open source software to help the world.  We hope that you
-will enjoy this software, and we also hope and that you will hire us.
-As authors of this software, we are best able to help you integrate it
-into your project and to assist you with any problems.
+This library is free software; you can redistribute it and/or modify
+it under the same terms as Perl itself.
 
 =head1 SYNOPSIS
 
@@ -99,9 +93,9 @@ file or any .as files.  In the latter case, the open source MTASC
 (L<http://www.mtasc.org/>) application could perform the
 recompilation.
 
-This module likely only works with ASCII filenames.  The heuristic
+This module likely only works with ASCII file names.  The heuristic
 used to parse the binary .fla files discards the upper Unicode byte of
-any filenames.
+any file names.
 
 If there are C<import> statements with wildcards in any .as files,
 then all files in the specified directory are considered dependencies,
@@ -119,7 +113,7 @@ C<import com.example.Foo;>
 
 =item check_files($file, $file, ...)
 
-Examine a list of .swf and/or .fla files and return the filenames of
+Examine a list of .swf and/or .fla files and return the file names of
 the ones that need to be recompiled.
 
 Performance note: Information is cached across files, so it's faster
@@ -135,7 +129,7 @@ sub check_files
    my @needs_recompile;
 
    # The depends hash is a cache of the #include and import lines in each file
-   my %depends = ();
+   my %depends;
 
    foreach my $file (@files)
    {
@@ -161,7 +155,7 @@ sub check_files
 
       # Check all SWF dependencies, recursively
       my @check = ($fla);
-      my %checked = ();
+      my %checked;
       my $up_to_date = 1;
       while (@check > 0)
       {
@@ -197,7 +191,7 @@ sub check_files
             my $content = File::Slurp::read_file($checkfile);
             my %imported_files;
             my %seen;
-            
+
             if ($checkfile =~ m/\.fla\z/ixms)
             {
                # HACK: use C regexp because the ECMAScript regexp can
@@ -216,7 +210,7 @@ sub check_files
                _get_imports($checkfile, \$content, \@paths, \%imported_files, \%seen),
                _get_instantiations($checkfile, \$content, \@paths, \%imported_files, \%seen),
             );
-            my @problems = map {@$_} grep {ref $_} @deps;
+            my @problems = map { @{$_} } grep { ref $_ } @deps;
             if (@problems > 0)
             {
                _log(1, "Failed to locate dependencies in $checkfile: @problems");
@@ -251,7 +245,7 @@ sub _get_fla_classpaths
          # Hack: downgrade unicode to ascii
          $match =~ s/\0//gxms;
          next if ($match eq q{});
-         my @search_paths = split /;/xms, $match;
+         my @search_paths = split m/;/xms, $match;
          require File::Spec;
          for my $path (@search_paths)
          {
@@ -274,15 +268,15 @@ sub _get_fla_classpaths
 
 sub _get_includes
 {
-   my $checkfile = shift;
+   my $checkfile   = shift;
    my $content_ref = shift;
-   my $seen_ref = shift;
+   my $seen_ref    = shift;
 
    my @deps;
 
    # Check both ascii and ascii-unicode, supporting Flash MX and 2004 .fla files
    # This will fail for non-ascii filenames
-   my @matches = $$content_ref =~ m/\#\0?i\0?n\0?c\0?l\0?u\0?d\0?e\0?(?:\s\0?)+\"\0?([^\"\r\n]+?)\"/gxms;
+   my @matches = ${$content_ref} =~ m/\#\0?i\0?n\0?c\0?l\0?u\0?d\0?e\0?(?:\s\0?)+\"\0?([^\"\r\n]+?)\"/gxms;
    foreach my $inc (@matches)
    {
       next if ($seen_ref->{$inc}++); # speedup
@@ -312,22 +306,22 @@ sub _get_includes
 
 sub _get_imports
 {
-   my $checkfile = shift;
-   my $content_ref = shift;
-   my $fla_path_ref = shift;
+   my $checkfile         = shift;
+   my $content_ref       = shift;
+   my $fla_path_ref      = shift;
    my $imported_file_ref = shift;
-   my $seen_ref = shift;
+   my $seen_ref          = shift;
 
    my @deps;
-   my @matches = $$content_ref =~ m/i\0?m\0?p\0?o\0?r\0?t\0?(?:\s\0?)+((?:[^\;\0\s]\0?)+);/gxms;
+   my @matches = ${$content_ref} =~ m/i\0?m\0?p\0?o\0?r\0?t\0?(?:\s\0?)+((?:[^\;\0\s]\0?)+);/gxms;
    foreach my $imp (@matches)
    {
-      next if ($seen_ref->{$imp}++); # speedup
+      next if ($seen_ref->{$imp}++);    # speedup
       # This is a hack.  Strip real Unicode down to ASCII
       $imp =~ s/\0//gxms;
       _log(2, "import $imp from $checkfile");
       my $found = 0;
-      foreach my $dir (@$fla_path_ref, as_classpath())
+      foreach my $dir (@{$fla_path_ref}, as_classpath())
       {
          my $f = File::Spec->catdir(File::Spec->splitdir($dir), split /\./xms, $imp);
          if ($f =~ m/\*\z/xms)
@@ -337,14 +331,14 @@ sub _get_imports
             $f = File::Spec->catdir(@d);
             if (-d $f)
             {
-               my @as = grep {m/\.as\z/xms} File::Slurp::read_dir($f);
-               
+               my @as = grep { m/\.as\z/xms } File::Slurp::read_dir($f);
+
                for my $file (@as)
                {
                   $imported_file_ref->{$file} = 1;
                }
-               @as = map {File::Spec->catfile($f, $_)} @as;
-               
+               @as = map { File::Spec->catfile($f, $_) } @as;
+
                for my $file (@as)
                {
                   _log(2, "  import $file from $checkfile");
@@ -358,8 +352,8 @@ sub _get_imports
             $f .= '.as';
             if (-f $f)
             {
-               my @p = split /\./xms, $imp;
-               $imported_file_ref->{$p[-1].'.as'} = 1;
+               my @p = split m/\./xms, $imp;
+               $imported_file_ref->{$p[-1] . '.as'} = 1;
                _log(2, "  import $f from $checkfile");
                push @deps, $f;
                $found = 1;
@@ -374,18 +368,23 @@ sub _get_imports
 
 sub _get_instantiations
 {
-   my $checkfile = shift;
-   my $content_ref = shift;
-   my $fla_path_ref = shift;
+   my $checkfile         = shift;
+   my $content_ref       = shift;
+   my $fla_path_ref      = shift;
    my $imported_file_ref = shift;
-   my $seen_ref = shift;
+   my $seen_ref          = shift;
 
    # Get a list of all classes defined in this file
-   my @class_matches = $$content_ref =~ m/c\0?l\0?a\0?s\0?s\0?(?:\s\0?)+((?:[^;\s\0]\0?)+)/gxms;
-   my @classes = map {s/\0//gxms; $_} @class_matches;
+   my @classes;
+   my @class_matches = ${$content_ref} =~ m/c\0?l\0?a\0?s\0?s\0?(?:\s\0?)+((?:[^;\s\0]\0?)+)/gxms;
+   for my $class_match (@class_matches)
+   {
+      $class_match =~ s/\0//gxms;
+      push @classes, $class_match;
+   }
 
    my @deps;
-   my @matches = $$content_ref =~ m/n\0?e\0?w\0?(?:\s\0?)+((?:[\w\.]\0?)+)\(/gxms;
+   my @matches = ${$content_ref} =~ m/n\0?e\0?w\0?(?:\s\0?)+((?:[\w\.]\0?)+)\(/gxms;
    foreach my $imp (@matches)
    {
       next if ($seen_ref->{$imp}++); # speedup
@@ -393,13 +392,13 @@ sub _get_instantiations
       $imp =~ s/\0//gxms;
       next if ($exceptions{$imp});
       _log(2, "instance $imp from $checkfile");
-      next if ($imported_file_ref->{$imp.'.as'});
+      next if ($imported_file_ref->{$imp . '.as'});
       # Is this class implemented in this very file?
-      next if (grep {$_ eq $imp || m/\.\Q$imp\E\z/xms} @classes);
+      next if (grep { $_ eq $imp || m/\.\Q$imp\E\z/xms } @classes);
       my $found = 0;
-      foreach my $dir (@$fla_path_ref, as_classpath())
+      foreach my $dir (@{$fla_path_ref}, as_classpath())
       {
-         my $f = File::Spec->catdir(File::Spec->splitdir($dir), split /\./xms, $imp);
+         my $f = File::Spec->catdir(File::Spec->splitdir($dir), split m/\./xms, $imp);
          $f .= '.as';
          if (-f $f)
          {
@@ -420,7 +419,6 @@ Returns a list of Classpath directories specified globally in Flash.
 
 =cut
 
-my $cached_as_classpath;
 sub as_classpath
 {
    if (!$cached_as_classpath)
@@ -456,12 +454,12 @@ sub as_classpath
          }
       }
    }
-   return @$cached_as_classpath;
+   return @{$cached_as_classpath};
 }
 
 =item $pkg->flash_prefs_path()
 
-Returns the filename of the Flash preferences XML file.
+Returns the file name of the Flash preferences XML file.
 
 =cut
 
@@ -505,6 +503,7 @@ sub set_verbose
    $pkg->set_verbosity($new_verbosity ? 1 : 0);
    return;
 }
+
 sub set_verbosity
 {
    my $pkg           = shift;
@@ -533,7 +532,7 @@ sub _get_path
 {
    my $type = shift;
 
-   my $os = $os_paths{$OSNAME};   # aka $^O
+   my $os = $os_paths{$OSNAME};    # aka $^O
    if (!$os)
    {
       return;
@@ -541,11 +540,11 @@ sub _get_path
       #    join(q{ }, sort keys %os_paths)."\n";
    }
    my $list = $os->{$type};
-   my @match = grep { -e $_ } @$list;
+   my @match = grep { -e $_ } @{$list};
    if (@match == 0)
    {
       return;
-      #croak join("\n  ", 'Failed to find any of the following:', @$list)."\n";
+      #croak join("\n  ", 'Failed to find any of the following:', @{$list})."\n";
    }
    return $match[0];
 }
@@ -553,7 +552,7 @@ sub _get_path
 # A simplified version of Module::Build::Base::up_to_date
 sub _up_to_date
 {
-   my $src = shift;
+   my $src  = shift;
    my $dest = shift;
 
    return 0 if (! -e $dest);
@@ -579,6 +578,8 @@ __END__
 
 =head1 BUGS AND LIMITATIONS
 
+=head2 Comments
+
 This module tries to ignore dependencies specified inside comments like these:
 
    /* #include "foo.as" */
@@ -592,14 +593,40 @@ to spurious errors.  Perhaps this is a problem with
 Regexp::Common::comment or just that some C<.fla> files have too few
 line endings?
 
+=head2 Unicode Class Names and Paths
+
+Flash stores source code and include paths inside of the C<.fla>
+binary as (I think) UCS2 strings.  This code converts those strings to
+ASCII by simply stripping all of the C<\0> characters.  This is REALLY
+BAD, but it works fine for pure-ASCII path names.
+
+=head2 Operating Systems
+
+This code works great on Mac OS X.  The typical paths for the Flash
+configuration directory are provided for that platform.
+
+This code will still work marginally under Windows, but for full
+support I need to know the path to the preferences file and the
+configuration directory.  I need those locations for Macromedia
+classes and default include paths.
+
 =head1 SEE ALSO
 
 Module::Build::Flash uses this module.
 
 =head1 AUTHOR
 
-Clotho Advanced Media Inc., I<cpan@clotho.com>
+Chris Dolan
 
-Primary developer: Chris Dolan
+This module was originally developed by me at Clotho Advanced Media
+Inc.  Now I maintain it in my spare time.
 
 =cut
+
+# Local Variables:
+#   mode: cperl
+#   cperl-indent-level: 3
+#   fill-column: 78
+#   indent-tabs-mode: nil
+# End:
+# ex: set ts=8 sts=3 sw=3 tw=78 ft=perl expandtab :
