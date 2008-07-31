@@ -2,15 +2,16 @@ package SWF::NeedsRecompile;
 
 use warnings;
 use strict;
-use 5.006;    # tested only on 5.8.6+, but *should* work on older perls
+use 5.008;    # tested only on 5.8.6+, but *should* work on older perls
 use Carp;
 use English qw(-no_match_vars);
 use File::Spec;
 use File::Slurp qw();
 use Regexp::Common qw(comment);
 use File::HomeDir;
+use List::MoreUtils qw(any);
 
-our $VERSION = '1.05';
+our $VERSION = '1.06';
 
 use base qw(Exporter);
 our @EXPORT_OK = qw(
@@ -49,7 +50,7 @@ sub _get_os_paths    # FOR TESTING ONLY!!!
    return \%os_paths;
 }
 
-=for stopwords Actionscript Classpath MTASC MX SWF .swf .fla timestamp wildcards UCS2
+=for stopwords Actionscript Classpath MTASC MX SWF .swf .fla timestamp wildcards UCS2 Dolan Macromedia
 
 =head1 NAME 
 
@@ -60,7 +61,7 @@ SWF::NeedsRecompile - Tests if any SWF or FLA file dependencies have changed
 Copyright 2002-2006 Clotho Advanced Media, Inc.,
 L<http://www.clotho.com/>
 
-Copyright 2007 Chris Dolan
+Copyright 2007-2008 Chris Dolan
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself.
@@ -133,7 +134,7 @@ sub check_files
 
    foreach my $file (@files)
    {
-      (my $base = $file) =~ s/\.(?:swf|fla)\z//xms;
+      (my $base = $file) =~ s/[.](?:swf|fla)\z//xms;
       if ($base eq $file)
       {
          _log(1, "$file is not a .swf or a .fla file");
@@ -192,7 +193,7 @@ sub check_files
             my %imported_files;
             my %seen;
 
-            if ($checkfile =~ m/\.fla\z/ixms)
+            if ($checkfile =~ m/[.]fla\z/ixms)
             {
                # HACK: use C regexp because the ECMAScript regexp can
                # cause an infinite loop on some .fla files.
@@ -235,16 +236,16 @@ sub _get_fla_classpaths
    my $fla = shift;
 
    my @paths;
-   if (-f $fla && (my $content = File::Slurp::read_file($fla)))
+   if (-f $fla && (my $content = File::Slurp::read_file($fla, binmode => ':raw')))
    {
       # Limitation: the path must be purely ASCII or this doesn't work
-      my @matches = $content =~ m/V\0e\0c\0t\0o\0r\0:\0:\0P\0a\0c\0k\0a\0g\0e\0\ \0P\0a\0t\0h\0s\0....((?:[^\0]\0)*)/gxms;
+      my @matches = $content =~ m/V\0e\0c\0t\0o\0r\0:\0:\0P\0a\0c\0k\0a\0g\0e\0[ ]\0P\0a\0t\0h\0s\0....((?:[^\0]\0)*)/gxms;
       my %seen;
       for my $match (@matches)
       {
          # Hack: downgrade unicode to ascii
          $match =~ s/\0//gxms;
-         next if ($match eq q{});
+         next if q{} eq $match;
          my @search_paths = split m/;/xms, $match;
          require File::Spec;
          for my $path (@search_paths)
@@ -276,7 +277,7 @@ sub _get_includes
 
    # Check both ascii and ascii-unicode, supporting Flash MX and 2004 .fla files
    # This will fail for non-ascii filenames
-   my @matches = ${$content_ref} =~ m/\#\0?i\0?n\0?c\0?l\0?u\0?d\0?e\0?(?:\s\0?)+\"\0?([^\"\r\n]+?)\"/gxms;
+   my @matches = ${$content_ref} =~ m/\#\0?i\0?n\0?c\0?l\0?u\0?d\0?e\0?(?:\s\0?)+["]\0?([^"\r\n]+?)["]/gxms; ## no critic (EscapedMeta)
    foreach my $inc (@matches)
    {
       next if ($seen_ref->{$inc}++); # speedup
@@ -323,15 +324,15 @@ sub _get_imports
       my $found = 0;
       foreach my $dir (@{$fla_path_ref}, as_classpath())
       {
-         my $f = File::Spec->catdir(File::Spec->splitdir($dir), split /\./xms, $imp);
-         if ($f =~ m/\*\z/xms)
+         my $f = File::Spec->catdir(File::Spec->splitdir($dir), split m/[.]/xms, $imp);
+         if ($f =~ m/[*]\z/xms)
          {
             my @d = File::Spec->splitdir($f);
             pop @d;
             $f = File::Spec->catdir(@d);
             if (-d $f)
             {
-               my @as = grep { m/\.as\z/xms } File::Slurp::read_dir($f);
+               my @as = grep { m/[.]as\z/xms } File::Slurp::read_dir($f);
 
                for my $file (@as)
                {
@@ -352,7 +353,7 @@ sub _get_imports
             $f .= '.as';
             if (-f $f)
             {
-               my @p = split m/\./xms, $imp;
+               my @p = split m/[.]/xms, $imp;
                $imported_file_ref->{$p[-1] . '.as'} = 1;
                _log(2, "  import $f from $checkfile");
                push @deps, $f;
@@ -384,7 +385,7 @@ sub _get_instantiations
    }
 
    my @deps;
-   my @matches = ${$content_ref} =~ m/n\0?e\0?w\0?(?:\s\0?)+((?:[\w\.]\0?)+)\(/gxms;
+   my @matches = ${$content_ref} =~ m/n\0?e\0?w\0?(?:\s\0?)+((?:[\w.]\0?)+)[(]/gxms;
    foreach my $imp (@matches)
    {
       next if ($seen_ref->{$imp}++); # speedup
@@ -394,11 +395,11 @@ sub _get_instantiations
       _log(2, "instance $imp from $checkfile");
       next if ($imported_file_ref->{$imp . '.as'});
       # Is this class implemented in this very file?
-      next if (grep { $_ eq $imp || m/\.\Q$imp\E\z/xms } @classes);
+      next if any { $_ eq $imp || m/[.]\Q$imp\E\z/xms } @classes;
       my $found = 0;
       foreach my $dir (@{$fla_path_ref}, as_classpath())
       {
-         my $f = File::Spec->catdir(File::Spec->splitdir($dir), split m/\./xms, $imp);
+         my $f = File::Spec->catdir(File::Spec->splitdir($dir), split m/[.]/xms, $imp);
          $f .= '.as';
          if (-f $f)
          {
@@ -445,7 +446,7 @@ sub as_classpath
                }
                else
                {
-                  s/\$\(UserConfig\)/$conf_dir/xms;
+                  s/[$][(]UserConfig[)]/$conf_dir/xms;
                }
             }
             $cached_as_classpath = \@dirs;
@@ -541,7 +542,7 @@ sub _get_path
    }
    my $list = $os->{$type};
    my @match = grep { -e $_ } @{$list};
-   if (@match == 0)
+   if (0 == @match)
    {
       return;
       #croak join("\n  ", 'Failed to find any of the following:', @{$list})."\n";
@@ -562,11 +563,11 @@ sub _up_to_date
 
 sub _log
 {
-   my $level = shift;
+   my ($level, @msg) = @_;
 
    if ($verbosity >= $level)
    {
-      print @_, "\n";
+      print @msg, "\n";
    }
    return;
 }

@@ -1,5 +1,13 @@
 Revision history for Perl module SWF::NeedsRecompile
 
+1.06  31 Jul 2008
+      [INCOMPATIBILITIES]
+      - Upped minimum Perl from 5.006 to 5.008
+      [FIXES]
+      - Binmode for Windows (http://www.nntp.perl.org/group/perl.cpan.testers/1636318, DAGOLDEN)
+      [INTERNALS]
+      - Perl::Critic compliance
+
 1.05  20 May 2007
       [ENHANCEMENTS]
       - Use File::HomeDir instead of $ENV{HOME}

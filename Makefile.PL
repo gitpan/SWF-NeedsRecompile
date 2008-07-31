@@ -7,6 +7,7 @@ WriteMakefile
           'PREREQ_PM' => {
                            'File::HomeDir' => '0.50',
                            'File::Slurp' => '9999.09',
+                           'List::MoreUtils' => '0',
                            'Regexp::Common' => '2.12',
                            'Test::More' => '0'
                          },
